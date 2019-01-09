@@ -72,9 +72,12 @@ typedef unsigned long u32;
 #define TIER_BARRIER 0xFE08
 #define TIER_CACHESIZE 0xFE09
 #define TIER_SET_SECTORSIZE 0xFE0A
+#define TIER_HINTINJECT 0xFE0B
 #define TIER_HEADERSIZE 1048576
 #define TIER_DEVICE_BIT_MAGIC 0xabe
 #define TIER_DEVICE_BLOCK_MAGIC 0xafdf
+#define TIER_HINT_WAIT_QUEUE_SIZE 1000
+#define TIER_HINT_LIST_SIZE 1000
 
 #define WD 1 /* Write disk */
 #define WC 2 /* Write cache */
@@ -196,11 +199,18 @@ struct fd_s {
 
 #ifdef __KERNEL__
 
+struct bio_hint {
+    unsigned long long offset;
+    unsigned long long size;
+    int placement;
+};
+
 struct bio_task {
 	// atomic_t pending;
 	struct bio *parent_bio;
 	struct bio bio; /* the cloned bio */
 	struct tier_device *dev;
+	struct bio_hint *hint;
 	/*Holds the type of IO random or sequential*/
 	int iotype;
 	// int in_one;
@@ -303,6 +313,9 @@ struct tier_device {
 	/* Data migration work queue*/
 	struct workqueue_struct *migration_wq;
 	struct request_queue *rqueue;
+	struct bio* hint_wait_queue[TIER_HINT_WAIT_QUEUE_SIZE];
+	struct bio_hint* hint_list[TIER_HINT_LIST_SIZE];
+	struct mutex hint_lock;
 
 	/* mempool for bio_task data structure*/
 	mempool_t *bio_task;

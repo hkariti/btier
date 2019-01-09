@@ -638,7 +638,7 @@ bio_submitted_lastbio:
 }
 
 static inline struct bio_task *task_alloc(struct tier_device *dev,
-					  struct bio *parent_bio)
+					  struct bio *parent_bio, struct bio_hint *hint)
 {
 	struct bio_task *bt;
 	struct bio *bio;
@@ -649,6 +649,7 @@ static inline struct bio_task *task_alloc(struct tier_device *dev,
 	bt->parent_bio = parent_bio;
 	bt->dev = dev;
 	bt->iotype = RANDOM;
+	bt->hint = hint;
 
 	bio = &bt->bio;
 	bio_init(bio);
@@ -659,11 +660,50 @@ static inline struct bio_task *task_alloc(struct tier_device *dev,
 	return bt;
 }
 
+/*
+ * Find a hint that matches the given request.
+ * Matching is done according to offset and size of request.
+ * When a hint is found, remove it from the list and return it.
+ */
+struct bio_hint* tier_request_get_hint(struct tier_device *dev,
+                        struct bio *bio)
+{
+    struct bio_hint* *hint_list = dev->hint_list;
+    struct bio_hint *ret = NULL;
+    int i;
+    for (i = 0; i < TIER_HINT_LIST_SIZE; i++) {
+        if (!hint_list[i]) continue;
+        if (hint_list[i]->offset == bio->bi_iter.bi_sector &&
+                hint_list[i]->size == bio->bi_iter.bi_size) {
+            ret = hint_list[i];
+            hint_list[i] = NULL;
+            break;
+        }
+    }
+    return ret;
+}
+
+/*
+ * Suspend an io task until a matching hint arrives. The task is put
+ * in a waiting list. Refuse to suspend a task if the list if full.
+ */
+bool suspend_bio_for_hint(struct tier_device *dev, struct bio *bio) {
+    struct bio* *wait_queue = dev->hint_wait_queue;
+    int i;
+    for (i = 0; i < TIER_HINT_WAIT_QUEUE_SIZE; i++) {
+        if (wait_queue[i]) continue;
+        wait_queue[i] = bio;
+        return true;
+    }
+    return false;
+}
+
 blk_qc_t tier_make_request(struct request_queue *q, struct bio *parent_bio)
 {
 	int cpu;
 	struct tier_device *dev = q->queuedata;
 	struct bio_task *bt;
+	struct bio_hint *hint = NULL;
 	int rw = bio_rw(parent_bio);
 
 	atomic_set(&dev->wqlock, NORMAL_IO);
@@ -695,32 +735,53 @@ blk_qc_t tier_make_request(struct request_queue *q, struct bio *parent_bio)
 			goto end_return;
 		}
 
-		bt = task_alloc(dev, parent_bio);
+		if (rw == READ) {
+			bt = task_alloc(dev, parent_bio, hint);
+			tiered_dev_access(dev, bt);
+			goto end_return;
+		}
+		mutex_lock(&dev->hint_lock);
+		if (hint = tier_request_get_hint(dev, parent_bio)) {
+			mutex_unlock(&dev->hint_lock);
+			printk("btier: Found hint\n");
+		} else {
+			printk("btier: no hint. offset: %llu size: %hu\n", parent_bio->bi_iter.bi_sector, parent_bio->bi_iter.bi_size);
+			if (suspend_bio_for_hint(dev, parent_bio)) {
+				printk("btier: putting in list\n");
+				mutex_unlock(&dev->hint_lock);
+				// Decrease pending io count or else we'll block the data migrator and other ops
+				atomic_dec(&dev->aio_pending);
+				goto end_return;
+			}
+			printk("btier: hint wait list is full, proceeding with empty hint\n");
+			mutex_unlock(&dev->hint_lock);
+		}
+		bt = task_alloc(dev, parent_bio, hint);
 
 		tiered_dev_access(dev, bt);
 	}
 
-	goto end_return;
+    goto end_return;
 
 out:
-	bio_io_error(parent_bio);
+    bio_io_error(parent_bio);
 end_return:
-	atomic_set(&dev->wqlock, 0);
-	up_read(&dev->qlock);
-	return BLK_QC_T_NONE;
+    atomic_set(&dev->wqlock, 0);
+    up_read(&dev->qlock);
+    return BLK_QC_T_NONE;
 }
 
 void tier_request_exit(void)
 {
-	if (bio_task_cache)
-		kmem_cache_destroy(bio_task_cache);
+    if (bio_task_cache)
+        kmem_cache_destroy(bio_task_cache);
 }
 
 int __init tier_request_init(void)
 {
-	bio_task_cache = KMEM_CACHE(bio_task, 0);
-	if (!bio_task_cache)
-		return -ENOMEM;
+    bio_task_cache = KMEM_CACHE(bio_task, 0);
+    if (!bio_task_cache)
+        return -ENOMEM;
 
-	return 0;
+    return 0;
 }

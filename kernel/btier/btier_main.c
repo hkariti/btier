@@ -89,6 +89,72 @@ static int tier_open(struct block_device *bdev, fmode_t mode)
 	return 0;
 }
 
+static int hint_insert(struct tier_device *dev, struct bio_hint* hint) {
+    struct bio_hint** hint_list = dev->hint_list;
+    int i;
+    for (i = 0; i < TIER_HINT_LIST_SIZE; i++) {
+        if (hint_list[i]) continue;
+        hint_list[i] = hint;
+        break;
+    }
+    if (i == TIER_HINT_LIST_SIZE) {
+        return -ENOMEM;
+    }
+    return 0;
+}
+
+struct bio* hint_find_bio(struct tier_device *dev, struct bio_hint* hint) {
+    struct bio** wait_list = dev->hint_wait_queue;
+    struct bio* bio = NULL;
+    int i;
+    for (i = 0; i < TIER_HINT_WAIT_QUEUE_SIZE; i++) {
+        if (!wait_list[i]) continue;
+        bio = wait_list[i];
+        wait_list[i] = NULL;
+        break;
+    }
+    return bio;
+}
+/*
+ * inject a hint to the hints list and resume a matching io if's there.
+ * We're holding the ioctl mutex here
+ */
+static int do_hint_inject(struct tier_device *dev, void* user_bio_hint)
+{
+    int err = -ENOMEM;
+    struct bio_hint *entry;
+    unsigned long ret;
+    struct bio *bio;
+
+    entry = kmalloc(sizeof(struct bio_hint), GFP_KERNEL);
+    if (entry == NULL) {
+        pr_err("btier: hint_inject: can't allocate memory for bio_hint");
+        goto hint_inject_error;
+    }
+    ret = copy_from_user(entry, user_bio_hint, sizeof(struct bio_hint));
+    if (ret) {
+        pr_err("btier: hint_inject: can't copy %d bytes from user", ret);
+        goto hint_inject_error;
+    }
+
+    mutex_lock(&dev->hint_lock);
+    if (hint_insert(dev, entry)) {
+        pr_err("btier: hint_inject: hint list is full");
+        err = -EINVAL;
+        goto hint_inject_error;
+    }
+    bio = hint_find_bio(dev, entry);
+    mutex_unlock(&dev->hint_lock);
+    err = 0;
+    if (bio) {
+        generic_make_request(bio);
+    }
+    return err;
+hint_inject_error:
+    mutex_unlock(&dev->hint_lock);
+    return err;
+}
+
 void set_debug_info(struct tier_device *dev, int state)
 {
 #ifndef MAX_PERFORMANCE
@@ -1665,6 +1731,8 @@ static int tier_register(struct tier_device *dev)
 	init_waitqueue_head(&dev->migrate_event);
 	init_waitqueue_head(&dev->aio_event);
 
+	mutex_init(&dev->hint_lock);
+
 	dev->migrate_verbose = 0;
 	dev->stop = 0;
 
@@ -1867,6 +1935,8 @@ static void tier_deregister(struct tier_device *dev)
 		free_bitlists(dev);
 		free_blocklock(dev);
 		free_moving_bio(dev);
+
+		mutex_destroy(&dev->hint_lock);
 
 		for (i = 0; i < dev->attached_devices; i++) {
 			mark_device_clean(dev, i);
@@ -2364,6 +2434,10 @@ static long tier_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 				device = NULL;
 		}
 		kfree(dname);
+		break;
+	case TIER_HINTINJECT:
+		// TODO: support devs other than the last
+		err = do_hint_inject(dev, (void*)arg);
 		break;
 	default:
 		err = dev->ioctl ? dev->ioctl(dev, cmd, arg) : -EINVAL;
