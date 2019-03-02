@@ -89,6 +89,10 @@ static int tier_open(struct block_device *bdev, fmode_t mode)
 	return 0;
 }
 
+/*
+ * insert a hint into the hint hint list
+ * caller is holding the dev->hint_lock mutex
+ */
 static int hint_insert(struct tier_device *dev, struct bio_hint* hint) {
     struct bio_hint** hint_list = dev->hint_list;
     int i;
@@ -103,20 +107,27 @@ static int hint_insert(struct tier_device *dev, struct bio_hint* hint) {
     return 0;
 }
 
+/*
+ * find a waiting bio that matches a given hint.
+ * caller is holding the dev->hint_lock mutex
+ */
 struct bio* hint_find_bio(struct tier_device *dev, struct bio_hint* hint) {
     struct bio** wait_list = dev->hint_wait_queue;
     struct bio* bio = NULL;
     int i;
     for (i = 0; i < TIER_HINT_WAIT_QUEUE_SIZE; i++) {
         if (!wait_list[i]) continue;
-        bio = wait_list[i];
-        wait_list[i] = NULL;
-        break;
+        if (hint->offset == wait_list[i]->bi_iter.bi_sector &&
+                hint->size == wait_list[i]->bi_iter.bi_size) {
+            bio = wait_list[i];
+            wait_list[i] = NULL;
+            break;
+        }
     }
     return bio;
 }
 /*
- * inject a hint to the hints list and resume a matching io if's there.
+ * inject a hint to the hints list and resume a matching io if it's there.
  * We're holding the ioctl mutex here
  */
 static int do_hint_inject(struct tier_device *dev, void* user_bio_hint)
@@ -128,18 +139,18 @@ static int do_hint_inject(struct tier_device *dev, void* user_bio_hint)
 
     entry = kmalloc(sizeof(struct bio_hint), GFP_KERNEL);
     if (entry == NULL) {
-        pr_err("btier: hint_inject: can't allocate memory for bio_hint");
-        goto hint_inject_error;
+        pr_err("hint_inject: can't allocate memory for bio_hint");
+        return err;
     }
     ret = copy_from_user(entry, user_bio_hint, sizeof(struct bio_hint));
     if (ret) {
-        pr_err("btier: hint_inject: can't copy %d bytes from user", ret);
-        goto hint_inject_error;
+        pr_err("hint_inject: can't copy %lu bytes from user", ret);
+        goto hint_inject_error_nolock;
     }
 
     mutex_lock(&dev->hint_lock);
     if (hint_insert(dev, entry)) {
-        pr_err("btier: hint_inject: hint list is full");
+        pr_err("hint_inject: hint list is full");
         err = -EINVAL;
         goto hint_inject_error;
     }
@@ -147,11 +158,14 @@ static int do_hint_inject(struct tier_device *dev, void* user_bio_hint)
     mutex_unlock(&dev->hint_lock);
     err = 0;
     if (bio) {
+        pr_debug("hint_inject: resuming matching bio. offset: %lu size: %hu", bio->bi_iter.bi_sector, bio->bi_iter.bi_size);
         generic_make_request(bio);
     }
     return err;
 hint_inject_error:
     mutex_unlock(&dev->hint_lock);
+hint_inject_error_nolock:
+    kfree(entry);
     return err;
 }
 

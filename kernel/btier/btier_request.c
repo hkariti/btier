@@ -508,6 +508,7 @@ static void request_endio(struct bio *bio)
 	bio_endio(bt->parent_bio);
 	atomic_dec(&dev->aio_pending);
 	wake_up(&dev->aio_event);
+	kfree(bt->hint);
 	mempool_free(bt, dev->bio_task);
 }
 
@@ -630,6 +631,7 @@ static void tiered_dev_access(struct tier_device *dev, struct bio_task *bt)
 	return;
 
 bio_done:
+	kfree(bt->hint);
 	mempool_free(bt, dev->bio_task);
 	atomic_dec(&dev->aio_pending);
 	wake_up(&dev->aio_event);
@@ -741,19 +743,19 @@ blk_qc_t tier_make_request(struct request_queue *q, struct bio *parent_bio)
 			goto end_return;
 		}
 		mutex_lock(&dev->hint_lock);
-		if (hint = tier_request_get_hint(dev, parent_bio)) {
+		if ((hint = tier_request_get_hint(dev, parent_bio))) {
 			mutex_unlock(&dev->hint_lock);
-			printk("btier: Found hint\n");
+			pr_debug("Found hint. offset: %lu size: %hu\n", parent_bio->bi_iter.bi_sector, parent_bio->bi_iter.bi_size);
 		} else {
-			printk("btier: no hint. offset: %llu size: %hu\n", parent_bio->bi_iter.bi_sector, parent_bio->bi_iter.bi_size);
+			pr_debug("no hint. offset: %lu size: %hu\n", parent_bio->bi_iter.bi_sector, parent_bio->bi_iter.bi_size);
 			if (suspend_bio_for_hint(dev, parent_bio)) {
-				printk("btier: putting in list\n");
+				pr_debug("putting in wait list\n");
 				mutex_unlock(&dev->hint_lock);
 				// Decrease pending io count or else we'll block the data migrator and other ops
 				atomic_dec(&dev->aio_pending);
 				goto end_return;
 			}
-			printk("btier: hint wait list is full, proceeding with empty hint\n");
+			pr_debug("hint wait list is full, proceeding with empty hint\n");
 			mutex_unlock(&dev->hint_lock);
 		}
 		bt = task_alloc(dev, parent_bio, hint);
