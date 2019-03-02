@@ -302,6 +302,12 @@ static int allocate_block(struct tier_device *dev, u64 blocknr,
 		spin_unlock(&backdev->magic_lock);
 	}
 
+	/* If we've been given a placement hint, use it */
+	if (bt->hint && bt->hint->placement != -1) {
+		device = bt->hint->placement;
+        pr_debug("Trying to allocate block to device %d via hint", device);
+    }
+
 	while (1) {
 		if (0 != allocate_dev(dev, blocknr, binfo, device))
 			return -EIO;
