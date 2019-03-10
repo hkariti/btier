@@ -169,6 +169,67 @@ hint_inject_error_nolock:
     return err;
 }
 
+/*
+ * reset the hint state: release TIER_HINT_LIST_SIZE pending IOs and clear the hint list
+ * caller is holding the ioctl mutex
+ */
+static int do_hint_reset(struct tier_device *dev) {
+    int err = -ENOMEM;
+    struct bio_hint *hint;
+    struct bio *bio;
+    struct bio** pending_bios;
+    int i;
+
+    pr_debug("hint_reset: clearing hint list");
+    pending_bios = kzalloc(sizeof(struct bio*)* TIER_HINT_WAIT_QUEUE_SIZE, GFP_KERNEL);
+    if (!pending_bios) {
+        pr_err("hint_reset: can't allocate pending_bios");
+        goto hint_reset_end;
+    }
+    mutex_lock(&dev->hint_lock);
+    for (i=0; i < TIER_HINT_LIST_SIZE; i++) {
+        hint = dev->hint_list[i];
+        if (hint) {
+            kfree(hint);
+            dev->hint_list[i] = NULL;
+        }
+    }
+    pr_debug("hint_reset: hint list cleared");
+    pr_debug("hint_reset: clearing pending IOs list");
+    for (i=0; i < TIER_HINT_WAIT_QUEUE_SIZE; i++) {
+        bio = dev->hint_wait_queue[i];
+        if (bio) {
+            pending_bios[i] = bio;
+            dev->hint_wait_queue[i] = NULL;
+        }
+    }
+    mutex_unlock(&dev->hint_lock);
+    pr_debug("hint_reset: pending IOs list cleared");
+    pr_debug("hint_reset: resuming IOs");
+    for (i=0; i < TIER_HINT_WAIT_QUEUE_SIZE; i++) {
+        bio = pending_bios[i];
+        if (!bio) continue;
+		pr_debug("hint_reset: resuming bio. index: %d offset: %lu size: %hu", i, bio->bi_iter.bi_sector, bio->bi_iter.bi_size);
+        hint = kmalloc(sizeof(struct bio_hint), GFP_KERNEL);
+        if (hint == NULL) {
+            pr_err("hint_reset: can't allocate memory for bio_hint");
+            goto hint_reset_end;
+        }
+        hint->offset = bio->bi_iter.bi_sector;
+        hint->size = bio->bi_iter.bi_size;
+        hint->placement = -1;
+        mutex_lock(&dev->hint_lock);
+        hint_insert(dev, hint);
+        mutex_unlock(&dev->hint_lock);
+        generic_make_request(bio);
+    }
+    err = 0;
+    pr_debug("hint_reset: done\n");
+hint_reset_end:
+    kfree(pending_bios);
+    return err;
+}
+
 void set_debug_info(struct tier_device *dev, int state)
 {
 #ifndef MAX_PERFORMANCE
@@ -2452,6 +2513,9 @@ static long tier_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case TIER_HINTINJECT:
 		// TODO: support devs other than the last
 		err = do_hint_inject(dev, (void*)arg);
+		break;
+	case TIER_HINTRESET:
+		err = do_hint_reset(dev);
 		break;
 	default:
 		err = dev->ioctl ? dev->ioctl(dev, cmd, arg) : -EINVAL;
