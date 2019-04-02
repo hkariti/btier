@@ -682,7 +682,7 @@ struct bio_hint* tier_request_get_hint(struct tier_device *dev,
     int i;
     for (i = 0; i < TIER_HINT_LIST_SIZE; i++) {
         if (!hint_list[i]) continue;
-        pr_debug("get_hint: checking offset %lld size %llu size (uint): %u\n", hint_list[i]->offset, hint_list[i]->size, (unsigned int)hint_list[i]->size);
+        pr_debug("get_hint: checking offset %lld size %llu size (uint): %u size (bio): %u\n", hint_list[i]->offset, hint_list[i]->size, (unsigned int)hint_list[i]->size, bio_size);
         if (hint_list[i]->offset == bio->bi_iter.bi_sector &&
                 hint_list[i]->size == bio_size) {
             ret = hint_list[i];
