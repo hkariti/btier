@@ -678,11 +678,13 @@ struct bio_hint* tier_request_get_hint(struct tier_device *dev,
 {
     struct bio_hint* *hint_list = dev->hint_list;
     struct bio_hint *ret = NULL;
+    unsigned int bio_size = bio->bi_iter.bi_size;
     int i;
     for (i = 0; i < TIER_HINT_LIST_SIZE; i++) {
         if (!hint_list[i]) continue;
+        pr_debug("get_hint: checking offset %lld size %llu size (uint): %u\n", hint_list[i]->offset, hint_list[i]->size, (unsigned int)hint_list[i]->size);
         if (hint_list[i]->offset == bio->bi_iter.bi_sector &&
-                hint_list[i]->size == bio->bi_iter.bi_size) {
+                hint_list[i]->size == size) {
             ret = hint_list[i];
             hint_list[i] = NULL;
             break;
@@ -713,6 +715,7 @@ blk_qc_t tier_make_request(struct request_queue *q, struct bio *parent_bio)
 	struct bio_task *bt;
 	struct bio_hint *hint = NULL;
 	int rw = bio_rw(parent_bio);
+    unsigned long long size;
 
 	atomic_set(&dev->wqlock, NORMAL_IO);
 	down_read(&dev->qlock);
