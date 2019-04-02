@@ -98,6 +98,7 @@ static int hint_insert(struct tier_device *dev, struct bio_hint* hint) {
     int i;
     for (i = 0; i < TIER_HINT_LIST_SIZE; i++) {
         if (hint_list[i]) continue;
+        pr_debug("hint_insert: inserting hint to index %d. offset: %lu size: %hu\n", i, hint->offset, hint->size);
         hint_list[i] = hint;
         break;
     }
