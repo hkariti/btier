@@ -200,7 +200,7 @@ struct fd_s {
 
 #ifdef __KERNEL__
 
-struct __attribute__((packed)) bio_hint {
+struct bio_hint {
     long long offset;
     unsigned long long size;
     int placement;
