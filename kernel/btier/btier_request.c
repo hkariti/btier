@@ -751,9 +751,9 @@ blk_qc_t tier_make_request(struct request_queue *q, struct bio *parent_bio)
 		mutex_lock(&dev->hint_lock);
 		if ((hint = tier_request_get_hint(dev, parent_bio))) {
 			mutex_unlock(&dev->hint_lock);
-			pr_debug("Found hint. offset: %lu size: %hu\n", parent_bio->bi_iter.bi_sector, parent_bio->bi_iter.bi_size);
+			pr_debug("Found hint. offset: %lu size: %u\n", parent_bio->bi_iter.bi_sector, parent_bio->bi_iter.bi_size);
 		} else {
-			pr_debug("no hint. offset: %lu size: %hu\n", parent_bio->bi_iter.bi_sector, parent_bio->bi_iter.bi_size);
+			pr_debug("no hint. offset: %lu size: %u\n", parent_bio->bi_iter.bi_sector, parent_bio->bi_iter.bi_size);
 			if (suspend_bio_for_hint(dev, parent_bio)) {
 				pr_debug("putting in wait list\n");
 				mutex_unlock(&dev->hint_lock);
